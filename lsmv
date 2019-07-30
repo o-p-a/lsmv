@@ -1,0 +1,203 @@
+#! /usr/bin/ruby -E:UTF-8
+# -*- mode:Ruby; tab-width:4; coding:UTF-8; -*-
+# vi:set ft=ruby ts=4 fenc=UTF-8 :
+#----------------------------------------------------------------
+# まとめてリネーム
+#
+# 2016/03/21 opa
+#----------------------------------------------------------------
+
+# TODO:同名の場合リネームしない
+# TODO:一時ファイル名は自動でリカバリに
+
+ProgName = "lsmv"
+Version = "0.02"
+#=====dpk===== Copyright2016
+Copyright = "Copyright (c) 2016 by opa"
+#=====dpk=====
+
+#=====dpk===== compare4sort
+# 記号は先 / 数字は数値順 / 大文字小文字意識しない(全く同じ場合は意識) で比較する
+module Kernel
+module_function
+	def key4sort(s)
+		r = ""
+		tmp = s.gsub(/(\d{1,20})/) { ("00000000000000000000".freeze + $1)[-20, 20] }
+		tmp.each_char do |c|
+			r << case c
+			when /[\s!"\#$%&'()*+,-.\/:;<=>?@\[\\\]^_`{|}~]/;	"a".freeze
+			when /\d/;											"b".freeze
+			when /[a-z]/i;										"c".freeze
+			else;												"z".freeze
+			end
+			r << c
+		end
+		t = r.tr(
+			"A-ZÄËÏÖÜäëïöü" \
+			"〜ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾ" \
+			"タダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポ" \
+			"マミムメモャヤュユョヨラリルレロヮワヰヱヲンヴ".freeze,
+			"a-zaeiouaeiou" \
+			"～ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞ" \
+			"ただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽ" \
+			"まみむめもゃやゅゆょよらりるれろゎわゐゑをんゔ".freeze
+		)
+		return [t, r, s]
+	end
+
+	def compare4sort(a, b)
+		return key4sort(a) <=> key4sort(b)
+	end
+end
+#=====dpk=====
+
+require 'optparse'
+require 'fileutils'
+require 'tempfile'
+
+def File.extname2(filename)
+	if filename =~ /^(.*)(\.(?:bak|org|skip))$/
+		return extname($1) + $2
+	else
+		return extname(filename)
+	end
+end
+
+def File.basename2(filename, suffix="")
+	if filename =~ /^(.*)(\.(?:bak|org|skip))$/
+		filename = $1
+	end
+	return basename(filename, suffix)
+end
+
+# アクセス不可のときはリトライするmv
+def FileUtils.mv_with_retry(from, to, options={})
+	begin
+		mv(from, to, options)
+	rescue Errno::EACCES
+		$stderr.printf("%s: file in use, retrying: %s\n", ProgName, from)
+		sleep(1)
+		retry
+	end
+end
+
+def var_init
+	$PROGRAM_NAME = ProgName
+	$include_directory = false
+end
+
+def create_src(target_files)
+	src = []
+	target_files.each do |e|
+		skip = false
+		if e == "."
+			skip = true
+		elsif e == ".."
+			skip = true
+		elsif !$include_directory
+			if File.directory?(e)
+				skip = true
+			end
+		end
+		if !skip
+			src << e
+		end
+	end
+
+	src.sort_by! do |e|
+		base = File.basename2(e)
+		[key4sort(base), e]
+	end
+
+	return src
+end
+
+def do_rename(src, dst)
+	if src.size != dst.size
+		abort "Error: File count mismatch"
+	end
+
+	if dst.uniq.size != dst.size
+		abort "Error: Duplicate destination filename"
+	end
+
+	tmp_suffix = ".$$$#{ProgName}$$$#{Time.now.strftime("%Y%m%d%H%M%S")}$$$"
+	tmp = []
+
+	src.each_with_index do |e,i|
+		t = e + tmp_suffix
+		tmp[i] = t
+		FileUtils.mv_with_retry(e, t)
+	end
+
+	tmp.each_with_index do |e,i|
+		FileUtils.mv_with_retry(e, dst[i] + File.extname2(src[i]))
+	end
+end
+
+def lsmv(target_files)
+	src = create_src(target_files)
+
+	Tempfile.open(ProgName) do |tmpfile|
+		begin
+			tmpfile.open
+			tmpfile.truncate(0)
+			src.each do |e|
+				tmpfile.printf("%s\n", File.basename2(e, ".*"))
+			end
+			tmpfile.close
+
+			editor = ENV["EDITOR"] || "vi"
+			system(editor, tmpfile.path)
+
+			while true
+				printf("[E]xecute, [Q]uit, [R]e-edit?\n>")
+				r = gets.downcase[0]
+				break  if r == "e" || r == "q" || r == "r"
+			end
+
+			if r == "e"
+				tmpfile.open
+				dst = []
+				tmpfile.each_line do |aline|
+					dst << aline.strip
+				end
+				tmpfile.close
+				do_rename(src, dst)
+				# break
+			elsif r == "q"
+				# break
+			elsif r == "r"
+				redo
+			end
+		end while false
+	end
+end
+
+def main(args)
+	abort("This program must be use Ruby 1.9<= (current:#{RUBY_VERSION})")  if RUBY_VERSION < "1.9"
+	var_init
+
+	args.options do |opt|
+		opt.banner = "#{ProgName} v#{Version} #{Copyright}\n" +
+						"Usage: #{ProgName} [options] file..."
+
+		opt.on("-d", "--[no-]dir",
+			"ディレクトリを含める") do |v|
+			$include_directory = v
+		end
+
+		opt.parse!
+#		print(opt.help)  if args.empty?
+	end
+
+	if args.empty?
+		lsmv(Dir.entries("."))
+	else
+		lsmv(args)
+	end
+
+	return 0
+end
+
+exit main(ARGV)
