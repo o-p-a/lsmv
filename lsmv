@@ -73,7 +73,7 @@ end
 # アクセス不可のときはリトライするmv
 def FileUtils.mv_with_retry(from, to, options={})
 	begin
-		mv(from, to, options)
+		mv(from, to, **options)
 	rescue Errno::EACCES
 		$stderr.printf("%s: file in use, retrying: %s\n", ProgName, from)
 		sleep(1)
